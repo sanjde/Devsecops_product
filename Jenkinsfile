@@ -1,33 +1,60 @@
-node('master') {
-	stage ('checkout code'){
-		checkout scm
-	}
-	
-	stage ('Build'){
-		sh "mvn clean install -Dmaven.test.skip=true"
-	}
+pipeline {
+    agent any
+    tools {
+        maven 'maven'
+    }
+    stages {
 
-	stage ('Test Cases Execution'){
-		sh "mvn clean org.jacoco:jacoco-maven-plugin:prepare-agent install -Pcoverage-per-test"
-	}
+         /*stage('Cloning our Git') { 
 
-	stage ('Sonar Analysis'){
-		//sh 'mvn sonar:sonar -Dsonar.host.url=http://35.153.67.119:9000 -Dsonar.login=77467cfd2653653ad3b35463fbfdb09285f08be5'
-	}
+            steps { 
+                git 'https://github.com/anujdevopslearn/MavenBuild.git'
+            }
 
-	stage ('Archive Artifacts'){
-		archiveArtifacts artifacts: 'target/*.war'
-	}
-	
-	//stage ('Deployment'){
-	//	deploy adapters: [tomcat9(credentialsId: 'TomcatCreds', path: '', url: 'http://18.234.188.179:8080/')], contextPath: 'counterwebapp', war: 'target/*.war'
-	//}
-	
-	stage ('Notification'){
-		emailext (
-		      subject: "Job Completed",
-		      body: "Jenkins Pipeline Job for Maven Build got completed !!!",
-		      to: "build-alerts@example.com"
-		    )
-	}
+        } */
+
+
+
+
+        stage ('Build & JUnit Test') {
+            steps {
+                sh 'mvn install' 
+            }
+            //post {
+            //   success {
+            //        junit 'target/surefire-reports/**/*.xml' 
+             //   }
+            //}
+        }
+        /*stage ('Build & SonarQube Scan') {
+            steps {
+              withSonarQubeEnv('sonarqube') {
+                sh 'mvn -B -DskipTests clean package sonar:sonar'
+              }
+            } 
+        }*/
+         stage ('Docker Build') {
+            steps {
+                sh 'docker build -t java-example:v1 .'
+            }
+        }
+        /*stage('Testing Trivy'){
+           steps{
+              sh 'docker run ghcr.io/aquasecurity/trivy:latest image java-example:v1'
+           }
+        }*/
+        stage ('Terrascan Results') {
+            steps {
+                sh 'docker run --rm -it -v "$(pwd):/iac" -w /iac accurics/terrascan scan -i helm' //&& terrascan scan -i helm  > /home/sanjay/terrascan-scan-results/terrascan-scan-results-${BUILD_NUMBER}.txt'
+            }
+        }
+        /*
+        stage("Quality Gate") {
+            steps {
+              timeout(time: 2, unit: 'MINUTES') {
+                waitForQualityGate abortPipeline: true
+              }
+            }
+          }*/
+    }
 }
