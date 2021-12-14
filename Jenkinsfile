@@ -45,7 +45,7 @@ pipeline {
         }*/
         stage ('Terrascan Results') {
             steps {
-                sh 'docker run --rm -v "$(pwd):/iac" -w /iac accurics/terrascan scan -i helm' //&& terrascan scan -i helm  > /home/sanjay/terrascan-scan-results/terrascan-scan-results-${BUILD_NUMBER}.txt'
+                sh 'docker run --rm -v "$(pwd):/iac" -w /iac accurics/terrascan scan -i helm || echo finished' //&& terrascan scan -i helm  > /home/sanjay/terrascan-scan-results/terrascan-scan-results-${BUILD_NUMBER}.txt'
             }
         }
         /*
