@@ -1,0 +1,89 @@
+pool:
+  vmImage: 'ubuntu-18.04'
+
+variables:
+  trivyVersion: 0.9.1
+  tag: 'v1.0.0'
+
+steps:
+- task: Maven@3
+  inputs:
+    mavenPomFile: 'pom.xml' 
+    goals: ' -DskipTests package' 
+    publishJUnitResults: true 
+    testResultsFiles: 'target/surefire-reports/**/*.xml' # Required when publishJUnitResults == True
+  displayName: 'Maven Build Operation'  
+# Copy files
+
+- task: CopyFiles@2
+  inputs:
+    sourceFolder: $(system.defaultworkingdirectory)
+    targetFolder: $(Build.ArtifactStagingDirectory)
+  displayName: 'Copying files from System to Artifactory'
+ 
+- task: PublishBuildArtifacts@1
+  inputs:
+    pathToPublish: $(Build.ArtifactStagingDirectory)
+  displayName: 'Publishing Artifactory'
+    
+
+- task: PublishTestResults@2
+  inputs:
+    testResultsFormat: JUnit
+    testResultsFiles: '**/TEST-*.xml'
+    searchFolder: '$(system.defaultworkingdirectory)'
+  displayName: 'Publishing Test Results'
+
+- task: Docker@2
+  inputs:
+    repository: $(repository)
+    command: 'build'
+    Dockerfile: '**/Dockerfile'
+    tags: $(Build.BuildId)
+  displayName: 'Building the image from dockerfile'
+
+
+- task: Bash@3
+  inputs:
+    targetType: 'inline'
+    script: |
+      sudo docker login $(acrlink) -u $(userName) -p $(acr_password)
+      
+      sudo docker tag $(repository):$(Build.BuildId) $(acrlink)/$(repository):$(Build.BuildId)
+      
+      sudo docker push $(acrlink)/$(repository):$(Build.BuildId)
+  displayName: 'Pushing Image to Container Registery'
+
+- task: Bash@3
+  inputs:
+    targetType: 'inline'
+    script: |
+      sudo apt-get install rpm
+          wget https://github.com/aquasecurity/trivy/releases/download/v$(trivyVersion)/trivy_$(trivyVersion)_Linux-64bit.deb
+          sudo dpkg -i trivy_$(trivyVersion)_Linux-64bit.deb
+          trivy -v
+  displayName: 'Download and install Trivy'
+
+- task: Bash@3
+  inputs:
+    targetType: 'inline'
+    script: 'trivy image $(repository):$(Build.BuildId)'
+  displayName: 'Test image using trivy'
+  
+- task: Bash@3
+  inputs:
+    targetType: 'inline'
+    script: |
+      curl --location https://github.com/accurics/terrascan/releases/download/v1.3.1/terrascan_1.3.1_Linux_x86_64.tar.gz --output terrascan.tar.gz
+          tar -xvf terrascan.tar.gz
+          sudo install terrascan /usr/local/bin
+  displayName: 'Download and Install terrascan'
+
+- task: Bash@3
+  inputs:
+    targetType: 'inline'
+    script: './terrascan scan -i k8s || echo successfully build'
+  displayName: 'Testing terrascan'
+
+
+

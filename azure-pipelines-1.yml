@@ -1,0 +1,181 @@
+# acr_password,acrlink,repository,userName
+variables:
+  trivyVersion: 0.9.1
+  vmImage: 'ubuntu-18.04'
+
+
+# Build Stage
+stages:
+# Building Maven project
+- stage: Build
+  jobs:
+  - job: run_build
+    pool:
+      vmImage: $(vmImage)
+    steps:
+    - task: SonarQubePrepare@5
+      inputs:
+        SonarQube: 'nanditasonarqube'
+        scannerMode: 'Other'
+        extraProperties: |
+          # Additional properties that will be passed to the scanner,
+          # Put one key=value per line, example:
+          # sonar.exclusions=**/*.bin
+          sonar.projectKey=YourProjectKey
+    - task: Maven@3
+      inputs:
+        mavenPomFile: 'pom.xml'
+        goals: '-Dmaven.test.failure.ignore=true install'
+        publishJUnitResults: true
+        testResultsFiles: '**/target/surefire-reports/**/*.xml'
+        javaHomeOption: 'JDKVersion'
+        mavenVersionOption: 'Default'
+        mavenAuthenticateFeed: false
+        effectivePomSkip: false
+        sonarQubeRunAnalysis: true
+        sqMavenPluginVersionChoice: 'latest'
+      displayName: 'Maven Build Stage and using Junit for testing'
+
+# Copy files from system to artifactory
+    - task: CopyFiles@2
+      inputs:
+        sourceFolder: $(system.defaultworkingdirectory)
+        targetFolder: $(Build.ArtifactStagingDirectory)
+      displayName: 'Copying files from System to Artifactory'
+
+# Publishing artifactory 
+    - publish: '$(Build.ArtifactStagingDirectory)'
+      displayName: 'Publishing Artifactory'
+      artifact: drop
+    - task: SonarQubePublish@5
+      inputs:
+        pollingTimeoutSec: '300'
+
+# Testing stage
+- stage: Test
+  dependsOn: Build
+  jobs:
+  - job: run_test
+    pool:
+      vmImage: $(vmImage)
+    steps:
+    - download: current
+      artifact: drop
+
+# Building Image using Dockerfile
+    - task: Docker@2
+      inputs:
+        repository: $(repository)
+        command: 'build'
+        Dockerfile: '$(Pipeline.Workspace)/drop/Dockerfile'
+        tags: $(Build.BuildId)
+      displayName: 'Building the image from dockerfile'
+
+
+#  Download and install Trivy
+    - task: Bash@3
+      inputs:
+        targetType: 'inline'
+        script: |
+          sudo apt-get install rpm
+                    wget https://github.com/aquasecurity/trivy/releases/download/v$(trivyVersion)/trivy_$(trivyVersion)_Linux-64bit.deb
+                    sudo dpkg -i trivy_$(trivyVersion)_Linux-64bit.deb
+                    trivy -v
+      displayName: 'Download and install Trivy'
+
+# Test image using trivy   
+    - task: Bash@3
+      inputs:
+        targetType: 'inline'
+        script: |
+          docker pull aquasec/trivy
+          sudo docker run aquasec/trivy image $(repository):$(Build.BuildId)
+
+          # trivy image $(repository):$(Build.BuildId)  
+          # trivy image --severity LOW,MEDIUM --format template --template "@templates/junit.tpl" -o junit-report-low-med.xml $(repository):$(Build.BuildId)  
+          # trivy image --severity HIGH,CRITICAL --format template --template "@templates/junit.tpl" -o junit-report-high-crit.xml $(repository):$(Build.BuildId)
+          # cat /home/vsts/work/1/s/junit-report-low-med.xml
+          # cat /home/vsts/work/1/s/junit-report-high-crit.xml       
+
+        #script: 'trivy image $(repository):$(Build.BuildId)'
+      displayName: 'Test image using trivy'
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/junit-report-low-med.xml'
+        mergeTestResults: true
+        failTaskOnFailedTests: false
+        testRunTitle: 'Trivy - Low and Medium Vulnerabilities'
+      condition: 'always()'
+      displayName: 'Trivy - Low and Medium Vulnerabilities Junit Report'
+    
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/junit-report-high-crit.xml'
+        mergeTestResults: true
+        failTaskOnFailedTests: true
+        testRunTitle: 'Trivy - High and Critical Vulnerabilities'
+      condition: 'always()' 
+      displayName: 'Trivy - High and Critical Vulnerabilities Junit Report'           
+
+# Pushing Image to Container Registery
+    - task: Bash@3
+      inputs:
+        targetType: 'inline'
+        script: |
+          sudo docker login $(acrlink) -u $(userName) -p $(acr_password)
+                
+                sudo docker tag $(repository):$(Build.BuildId) $(acrlink)/$(repository):$(Build.BuildId)
+                
+                sudo docker push $(acrlink)/$(repository):$(Build.BuildId)
+      displayName: 'Pushing Image to Container Registery'
+
+
+
+
+
+
+# Deploy stage
+- stage: Deploy
+  dependsOn: Test
+  jobs:
+  - job: run_deploy
+    pool:
+      vmImage: $(vmImage)
+    steps:
+      
+# Download and Install terrascan
+    - task: Bash@3
+      inputs:
+        targetType: 'inline'
+        script: |
+          curl --location https://github.com/accurics/terrascan/releases/download/v1.12.0/terrascan_1.12.0_Linux_x86_64.tar.gz --output terrascan.tar.gz
+                    tar -xvf terrascan.tar.gz
+                    sudo install terrascan /usr/local/bin
+      displayName: 'Download and Install terrascan'
+
+
+# Scanning terrascan yaml files
+    - task: Bash@3
+      inputs:
+        targetType: 'inline'
+        script: './terrascan scan -i k8s || echo successfully build'
+      displayName: 'Scanning yaml files using terrascan'
+
+# Scanning helm using terrascan 
+    - task: Bash@3
+      inputs:
+        targetType: 'inline'
+        script: './terrascan scan -i helm --skip-rules --show-passed -o junit-xml -d helm-sample > terrascan-test-result.xml || echo successfully passed'
+      displayName: 'Scanning helm using terrascan '
+
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/terrascan-test-result.xml'
+        mergeTestResults: true
+        failTaskOnFailedTests: false
+        testRunTitle: 'Terrascan Results'
+      condition: 'always()'
+      displayName: 'Generating Terrascan Report Using Junit'  
